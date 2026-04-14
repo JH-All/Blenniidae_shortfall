@@ -184,8 +184,8 @@ authors_mean <- species_new %>%
 head(authors_mean)
 
 fig1_C = ggplot(authors_mean, aes(x = year, y = mean_authors)) +
-  geom_point(size = 5 , alpha = 0.6, shape = 21, fill = "#2E86AB", color = "black") +
-  geom_line(linewidth = 0.3, color = "#2E86AB", linetype = "dashed") +
+  geom_point(size = 5 , alpha = 0.4, shape = 21, fill = "darkgreen", color = "black") +
+  geom_line(linewidth = 0.3, color = "darkgreen", linetype = "dashed") +
   scale_x_continuous(limits = c(1754, 2024), breaks = seq(1754, 2024, by = 30))+
   labs(
     x = NULL,
@@ -616,34 +616,6 @@ fig3_A = data %>%
 
 fig3_A
 
-# Year ~ IUCN -------------------------
-## Kruskal-Wallis ---------------------------
-data$iucn = as.factor(data$iucn)
-levels(data$iucn)
-
-data <- data %>%
-  mutate(
-    iucn = dplyr::recode(iucn,
-                         "Lc" = "LC",
-                         "EM" = "EN")
-  )
-
-data$iucn <- factor(
-  data$iucn,
-  levels = c("NE", "DD", "LC", "NT", "VU", "EN")
-)
-
-data2 <- data %>% 
-  filter(!iucn %in% c("NE","DD", "NT"))
-
-kruskal.test(year ~ iucn, data = data2)
-
-pairwise.wilcox.test(
-  data2$year,
-  data2$iucn,
-  p.adjust.method = "BH"
-)
-
 # Year ~ Área de ocorrência ----------------------------
 ## Getting species occurrence area ready -------------------------
 blen_all <- readRDS("blen_all.rds")
@@ -697,6 +669,10 @@ data <- data %>%
   left_join(blen_area_df, by = c("species" = "sci_name"))
 
 ## GLMM -----------------------
+data$log_area <- log10(data$area_km2)
+
+data_model <- data[is.finite(data$log_area), ]
+
 mod_area_glmm <- glmmTMB(
   year ~ log_area + (1 | genus),
   data = data_model,
@@ -728,7 +704,71 @@ fig3
 
 ggsave("Figure_3.jpg", fig3, width = 11, height = 5)
 
-## Species richness  ---------------------
+# Year ~ IUCN -------------------------
+## Kruskal-Wallis ---------------------------
+data$iucn = as.factor(data$iucn)
+levels(data$iucn)
+
+data <- data %>%
+  mutate(
+    iucn = dplyr::recode(iucn,
+                         "Lc" = "LC",
+                         "EM" = "EN")
+  )
+
+data$iucn <- factor(
+  data$iucn,
+  levels = c("NE", "DD", "LC", "NT", "VU", "EN")
+)
+
+data2 <- data %>% 
+  filter(!iucn %in% c("NE","DD", "NT"))
+
+kruskal.test(year ~ iucn, data = data2)
+
+pairwise.wilcox.test(
+  data2$year,
+  data2$iucn,
+  p.adjust.method = "BH"
+)
+## Figure 4 ------------------------------------
+data_iucn <- data[!is.na(data$iucn), ]
+
+fig4 = data_iucn %>% 
+  ggplot(aes(x = iucn, y = year, fill = iucn)) +
+  
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  
+  geom_jitter(
+    width = 0.12, size = 2, shape = 21,
+    alpha = 0.5, show.legend = FALSE) +
+  
+  scale_fill_manual(values = c(
+    "NE" = "darkgray",
+    "DD" = "lightgray",
+    "LC" = "#a1d99b",   # light green
+    "NT" = "#006d2c",   # dark green
+    "VU" = "#FFD92F",   # yellow
+    "EN" = "#E6550D"    # orange
+  )) +
+  
+  scale_y_continuous(
+    limits = c(1754, 2024),
+    breaks = seq(1754, 2024, by = 30)
+  ) +
+  
+  theme_classic(base_size = 18) +
+  
+  labs(
+    x = "IUCN categories",
+    y = "Year of description"
+  )
+
+fig4
+
+ggsave("Figure_4.jpg", fig4)
+
+# Species richness  ---------------------
 world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
 
 sf_use_s2(FALSE) 
@@ -763,7 +803,7 @@ grid_keep$log_S = log10(grid_keep$richness)
 world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf") |>
   st_transform(target_crs)
 
-## Figure 4 ---------------------------------
+# Figure 5 ---------------------------------
 blen_year <- blen_simple %>%
   left_join(
     data %>% st_drop_geometry() %>% dplyr::select(species, year),
@@ -779,7 +819,7 @@ grid_year$mean_year <- sapply(hits_year[keep_year], function(i) {
   mean(blen_year$year[i], na.rm = TRUE)
 })
 
-fig4 = ggplot() +
+fig5 = ggplot() +
   geom_sf(data = world,
           fill = "gray90",
           color = "white",
@@ -805,11 +845,11 @@ fig4 = ggplot() +
     panel.grid = element_blank()
   )
 
-fig4
+fig5
 
-ggsave("figure_4.jpg",fig4)
+ggsave("Figure_5.jpg",fig5)
 
-## Figure 5 --------------------------------
+# Figure 6 --------------------------------
 
 grid_bivar <- grid_year %>%
   left_join(
@@ -849,7 +889,7 @@ p_map <- ggplot() +
     ylim = c(bbox_blen["ymin"], bbox_blen["ymax"]),
     expand = FALSE
   ) +
-  theme_minimal() +
+  theme_minimal(base_size = 22) +
   theme(
     legend.position = "none",
     panel.grid = element_blank()
@@ -878,12 +918,12 @@ p_leg <- ggplot(legend_df, aes(x = year_cat, y = rich_cat, fill = bi_class)) +
     axis.ticks = element_blank()
   )
 
-fig_5 = ggdraw() +
+fig_6 = ggdraw() +
   draw_plot(p_map, 0, 0, 1, 1) +
   draw_plot(p_leg, 0.78, 0.05, 0.16, 0.16)
 
-fig_5
+fig_6
 
-ggsave("Figure_5.jpg", fig_5, width = 15, height = 10)
+ggsave("Figure_6.jpg", fig_6, width = 15, height = 10)
 
 sf_use_s2(TRUE)
