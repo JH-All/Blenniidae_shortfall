@@ -118,28 +118,7 @@ species_plot <- species_all %>%
                                 "Synonym" = "Synonyms"))
 
 # Figure 1 -----------------------------
-## Figure 1A ----------------------
-fig1_A = ggplot(species_plot, aes(x = year, y = n_species, fill = status)) +
-  geom_point(shape = 21, size = 5 , alpha = 0.6, show.legend = F)+
-  scale_fill_manual(values = c("Valid species" = "#2E86AB", 
-                               "Synonyms" = "#E07A5F"))+
-  facet_wrap(~status, nrow = 2)+
-  labs(
-    x = NULL,
-    y = "Number of species described"
-  ) +
-  theme_classic(base_size = 18) +
-  theme(
-    legend.position = "bottom",
-    panel.grid.minor = element_blank()
-  )+
-  scale_x_continuous(limits = c(1754, 2024), breaks = seq(1754, 2024, by = 30))+
-  scale_y_continuous(limits = c(0,100))
-
-fig1_A
-
-
-## Figure 1B --------------
+## Figure 1A --------------
 species_cum <- species_all %>%
   filter(status %in% c("Validation", "Synonym")) %>%
   mutate(year = as.numeric(year)) %>%
@@ -155,14 +134,15 @@ species_cum <- species_cum %>%
                          "Synonym"   = "Synonyms"))
 
 
-fig1_B = ggplot(species_cum, aes(x = year, y = cumulative, fill = status)) +
+fig1_A = ggplot(species_cum, aes(x = year, y = cumulative, fill = status)) +
   geom_point(shape = 21, size = 5 , alpha = 0.6, color = "black",
-             show.legend = F) +
+             show.legend = T) +
   scale_fill_manual(values = c("Valid species" = "#2E86AB",
                                "Synonyms" = "#E07A5F")) +
   labs(
     x = NULL,
-    y = "Cumulative number \nof species"
+    y = "Cumulative number \nof species",
+    fill = NULL
   ) +
   theme_classic(base_size = 18) +
   theme(
@@ -171,10 +151,9 @@ fig1_B = ggplot(species_cum, aes(x = year, y = cumulative, fill = status)) +
   )+
   scale_x_continuous(limits = c(1754, 2024), breaks = seq(1754, 2024, by = 30))
 
-fig1_B 
+fig1_A
 
-
-## Figure 1C ----------------------------
+## Figure 1B ----------------------------
 authors_mean <- species_new %>%
   mutate(year = as.numeric(year)) %>%        
   group_by(year) %>%
@@ -183,9 +162,9 @@ authors_mean <- species_new %>%
 
 head(authors_mean)
 
-fig1_C = ggplot(authors_mean, aes(x = year, y = mean_authors)) +
-  geom_point(size = 5 , alpha = 0.4, shape = 21, fill = "darkgreen", color = "black") +
-  geom_line(linewidth = 0.3, color = "darkgreen", linetype = "dashed") +
+fig1_B = ggplot(authors_mean, aes(x = year, y = mean_authors)) +
+  geom_point(size = 5 , alpha = 0.6, shape = 21, fill = "gray", color = "black") +
+  geom_line(linewidth = 0.5, color = "gray", linetype = "dashed") +
   scale_x_continuous(limits = c(1754, 2024), breaks = seq(1754, 2024, by = 30))+
   labs(
     x = NULL,
@@ -193,15 +172,15 @@ fig1_C = ggplot(authors_mean, aes(x = year, y = mean_authors)) +
   ) +
   theme_classic(base_size = 18) 
 
-fig1_C
+fig1_B
 
 ## Complete figure ----------------------------
-fig1 <- (fig1_A | (fig1_B / fig1_C)) +
+fig1 <- (fig1_A | fig1_B) +
   plot_annotation(tag_levels = "A")
 
 fig1
 
-ggsave("Figure_1.jpg", fig1, width = 14, height = 9)
+ggsave("Figure_1.jpg", fig1, width = 14, height = 6)
 
 # Total species N estimates -----------------------------------
 data = read_excel("valid_species.xlsx")
