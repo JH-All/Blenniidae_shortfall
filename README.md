@@ -10,5 +10,5 @@
 
 - Where is the R code?
 
-          - code.R         # Step by step of the analysis!
+          - code.R # Step by step of the analysis!
           - run_models_modificado.R +  functions.R  # Some functions to run the analysis
