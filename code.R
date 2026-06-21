@@ -53,7 +53,10 @@ pkgs <- c(
   "AICcmodavg",
   "patchwork",
   "performance",
-  "glmmTMB"
+  "glmmTMB",
+  "openxlsx",
+  "RColorBrewer",
+  "bbmle"
 )
 
 load_or_install(pkgs)
@@ -134,23 +137,31 @@ species_cum <- species_cum %>%
                          "Synonym"   = "Synonyms"))
 
 
-fig1_A = ggplot(species_cum, aes(x = year, y = cumulative, fill = status)) +
-  geom_point(shape = 21, size = 5 , alpha = 0.6, color = "black",
-             show.legend = T) +
-  scale_fill_manual(values = c("Valid species" = "#2E86AB",
-                               "Synonyms" = "#E07A5F")) +
+fig1_A <- ggplot(
+  species_cum,
+  aes(x = year, y = cumulative, color = status)
+) +
+  geom_line(linewidth = 1.9) +
+  scale_color_manual(
+    values = c(
+      "Valid species" = "#2E86AB",
+      "Synonyms" = "#E07A5F"
+    )
+  ) +
   labs(
     x = NULL,
     y = "Cumulative number \nof species",
-    fill = NULL
+    color = NULL
   ) +
   theme_classic(base_size = 18) +
   theme(
     legend.position = "bottom",
     panel.grid.minor = element_blank()
-  )+
-  scale_x_continuous(limits = c(1754, 2024), breaks = seq(1754, 2024, by = 30))
-
+  ) +
+  scale_x_continuous(
+    limits = c(1754, 2024),
+    breaks = seq(1754, 2024, by = 30)
+  )
 fig1_A
 
 ## Figure 1B ----------------------------
@@ -183,380 +194,396 @@ fig1
 ggsave("Figure_1.jpg", fig1, width = 14, height = 6)
 
 # Total species N estimates -----------------------------------
-data = read_excel("valid_species.xlsx")
-str(data)
-data$year = as.numeric(data$year)
-summary(data$year)
+## Preparing ----------------------------------------
+species <- read.xlsx ("valid_species.xlsx")
 
-intervalos = read_excel("authors_by_interval.xlsx")
-
-parse_decade_start <- function(lbl_vec) {
-  x <- gsub("\\[|\\)|\\]", "", lbl_vec)
-  a <- sub(",.*$", "", x)
-  as.integer(round(as.numeric(a)))
-}
-parse_decade_end <- function(lbl_vec) {
-  x <- gsub("\\[|\\)|\\]", "", lbl_vec)
-  b <- sub("^.*,", "", x)
-  as.integer(round(as.numeric(b)))
-}
-make_label <- function(a, b, scientific_flag) {
-  aa <- if (scientific_flag) format(a, scientific = TRUE) else as.character(a)
-  bb <- if (scientific_flag) format(b, scientific = TRUE) else as.character(b)
-  paste0("[", aa, ",", bb, ")")
-}
-
-dados <- data %>%
-  rename(ano_descricao = year,
-         num_autores   = num_authors) %>%
-  filter(!is.na(ano_descricao)) %>%
-  mutate(decade_start = floor(ano_descricao/10)*10)
-
-use_sci <- grepl("e\\+03", intervalos$intervalo[1])
-
-lab_1750 <- make_label(1750, 1760, scientific_flag = use_sci)
-
-intervalos_ext <- intervalos %>%
-  mutate(intervalo = as.character(intervalo)) %>%
-  bind_rows(tibble(intervalo = lab_1750, n_authors_unique = 1)) %>%
-  distinct(intervalo, .keep_all = TRUE) %>%
+data <- species %>%
+  filter(!is.na(species)) %>%
+  mutate (Family = "Blenniidae") %>%
   mutate(
-    decade_start  = parse_decade_start(intervalo),
-    decade_end    = parse_decade_end(intervalo)
+    author = author %>%
+      str_remove_all("\\(|\\)") %>%     
+      str_remove("\\s*\\d{4}$") %>%    
+      str_replace_all(",", " &") %>%     
+      str_squish()                       
   ) %>%
-  arrange(decade_start)
+  rename(Species = species, Genus = genus, taxonomist = author, Year = year)  %>%
+  select (Family, Genus, Species, taxonomist, Year)
 
-master_decades <- intervalos_ext$decade_start
 
-intervalos_key <- intervalos_ext %>%
-  mutate(intervalo_fac = factor(intervalo, levels = intervalos_ext$intervalo)) %>%
-  dplyr::select(decade_start, decade_end, intervalo, intervalo_fac, n_authors_unique)
-
-desc_intervalo <- dados %>%
-  group_by(decade_start) %>%
-  summarise(
-    Ano_médio = mean(ano_descricao, na.rm = TRUE),
-    Delta_St  = n(),
-    .groups   = "drop"
-  ) %>%
-  complete(decade_start = master_decades,
-           fill = list(Delta_St = 0, Ano_médio = NA_real_)) %>%
-  right_join(intervalos_key, by = "decade_start") %>% 
-  arrange(intervalo_fac) %>%
+data <- data %>%
   mutate(
-    Tt = ifelse(is.na(n_authors_unique), 0L, n_authors_unique)
-  ) %>%
-  dplyr::select(intervalo, decade_start, decade_end, Ano_médio, Delta_St, Tt)
-
-desc_intervalo <- desc_intervalo %>%
-  mutate(
-    Ano_médio_fill = ifelse(is.na(Ano_médio), decade_start + 5, Ano_médio),
-    St              = lag(cumsum(Delta_St), default = 0),
-    Acumulado_Total = cumsum(Delta_St),
-    Tempo           = Ano_médio_fill - min(Ano_médio_fill, na.rm = TRUE)
-  )
-
-nrow(desc_intervalo)  
-desc_intervalo %>% filter(decade_start == 1750) %>% dplyr::select(intervalo, Tt, Delta_St)
-desc_intervalo %>% filter(decade_start == 2020) %>% dplyr::select(intervalo, Tt, Delta_St)
-
-desc_intervalo
-
-Stot_init <- max(desc_intervalo$Acumulado_Total) * 2.5
-a_init <- 0.01 
-b_init <- 0.001  
-r_init <- 0.1  
-
-## Model 1: Joppa et al. (2011) ---------------------------
-modelo_joppa <- tryCatch({
-  gnls(
-    Delta_St ~ Tt * (a + b * Tempo) * (Stot - St),
-    data = desc_intervalo,
-    start = list(Stot = Stot_init, a = a_init, b = b_init),
-    control = gnlsControl(msVerbose = TRUE, maxIter = 500, nlsMaxIter = 100, tolerance = 1e-4)
-  )
-}, error = function(e) {
-  message("Erro no modelo Joppa: ", e$message)
-  return(NULL)
-})
-
-## Model 2: Lu & He (2017) --------------------------------------
-modelo_luhe <- tryCatch({
-  gnls(
-    Delta_St ~ (Tt * a * (Stot - St)) / (1 - Tt * b * (Stot - St)),
-    data = desc_intervalo,
-    start = list(Stot = Stot_init, a = a_init, b = b_init/100),
-    control = gnlsControl(msVerbose = TRUE, maxIter = 500, nlsMaxIter = 100, tolerance = 1e-4)
-  )
-}, error = function(e) {
-  message("Erro no modelo Lu & He: ", e$message)
-  return(NULL)
-})
-
-## Model 3: Logistic -------------------------
-modelo_logistico <- tryCatch({
-  nls(
-    Acumulado_Total ~ Stot / (1 + exp(-r * (Tempo - t0))),
-    data = desc_intervalo,
-    start = list(Stot = Stot_init, r = r_init, t0 = mean(desc_intervalo$Tempo)),
-    control = nls.control(maxiter = 1000, warnOnly = TRUE)
-  )
-}, error = function(e) {
-  message("Erro no modelo Logístico: ", e$message)
-  return(NULL)
-})
-
-## Model 4: Negative Exponential -----------------------
-modelo_exp_neg <- tryCatch({
-  nls(
-    Acumulado_Total ~ Stot * (1 - exp(-r * Tempo)),
-    data = desc_intervalo,
-    start = list(Stot = Stot_init, r = r_init),
-    control = nls.control(maxiter = 1000, warnOnly = TRUE)
-  )
-}, error = function(e) {
-  message("Erro no modelo Exponencial Negativo: ", e$message)
-  return(NULL)
-})
-
-## Model comparison ---------------------------------
-get_k <- function(m) length(coef(m))
-
-AICc_local <- function(m, n) {
-  k  <- get_k(m)
-  Ai <- AIC(m)
-  corr <- if (n > (k + 1)) 2 * k * (k + 1) / (n - k - 1) else Inf
-  Ai + corr
-}
-
-modelos_lista <- list(
-  "Joppa"        = modelo_joppa,
-  "LuHe"         = modelo_luhe,
-  "Logístico"    = modelo_logistico,
-  "ExpNegativo"  = modelo_exp_neg
-) |> discard(is.null)
-
-n_eff <- nrow(desc_intervalo)
-
-## Table 1 -------------------------------------
-tabela_comparacao <- if (length(modelos_lista) > 0) {
-  tibble(
-    Modelo = names(modelos_lista),
-    AICc   = map_dbl(modelos_lista, ~ AICc_local(.x, n = n_eff)),
-    k      = map_int(modelos_lista, get_k),
-    Stot_Estimado = map_dbl(modelos_lista, ~ { cf <- coef(.x); if ("Stot" %in% names(cf)) cf[["Stot"]] else NA_real_ })
-  ) |>
-    arrange(AICc) |>
-    mutate(
-      Delta_AICc = AICc - min(AICc),
-      wAICc      = round(exp(-0.5*Delta_AICc) / sum(exp(-0.5*Delta_AICc)), 4),
-      Stot_Estimado = round(Stot_Estimado, 1)
+    taxonomist = str_replace_all(
+      taxonomist,
+      c(
+        "Asso y del Rio" = "Asso_y_del_Rio",
+        "De Vis" = "De_Vis",
+        "Miranda Ribeiro" = "Miranda_Ribeiro",
+        "Smith-Vaniz & Acero P" = "Smith-Vaniz & Acero_P",
+        "von Bonde" = "von_Bonde"
+      )
     )
-} else tibble()
+  )
 
-print(tabela_comparacao)
 
-## Confidence interval ------------------------------
-set.seed(1234)
-boot_stot <- function(model, data, nboot = 1000) {
+n_distinct(data$Species)
+
+initial.data <- data 
+
+family.position <-1
+genus.position <-2
+species.position <-3
+taxonomist.position <-4
+year.position <-5
+
+####AUTHOR SPLITTING FUNCTION
+taxonomic.splitting.function<-function(dataset,taxonomist.column){
+  start.data<-as.matrix(dataset)
+  split.in<-strsplit(start.data[,taxonomist.column],split=c(" & "))
+  mx.tx<-max(unlist(lapply(split.in,function(x){x<-length(x)}))) ###the maximum number of authors describing a single species###
   
-  stot_vals <- numeric(nboot)
+  #########THIS SPLITS THE AUTHORS INTO INDIVIDUAL COLUMNS
+  na.matrix<-matrix(data="NA",ncol=mx.tx,nrow=nrow(start.data))
+  start.data1<-cbind(start.data,na.matrix) ###there are never more than mx.tx authors per species...
+  colnames(start.data1)<-c(colnames(start.data),paste("Taxonomist_",seq(1,mx.tx,1),sep=""))
   
-  for (i in 1:nboot) {
-    
-    data_boot <- data[sample(1:nrow(data), replace = TRUE), ]
-    
-    fit <- tryCatch({
-      update(model, data = data_boot)
-    }, error = function(e) NULL)
-    
-    if (!is.null(fit)) {
-      cf <- coef(fit)
-      if ("Stot" %in% names(cf)) {
-        stot_vals[i] <- cf["Stot"]
-      } else {
-        stot_vals[i] <- NA
-      }
-    } else {
-      stot_vals[i] <- NA
-    }
+  for(j in 1:mx.tx){
+    start.data1[,(j+ncol(start.data))]<-unlist(lapply(split.in,function(x){x<-noquote(x[j])}))
   }
   
-  stot_vals <- na.omit(stot_vals)
-  
-  quantile(stot_vals, c(0.025, 0.975))
+  start.data1<-as.data.frame(start.data1)
+  return(start.data1)
 }
 
-boot_stot(modelo_logistico, desc_intervalo)
-boot_stot(modelo_exp_neg, desc_intervalo)
-boot_stot(modelo_joppa, desc_intervalo)
-boot_stot(modelo_luhe, desc_intervalo)
+cleaned.tax.data <- taxonomic.splitting.function(dataset=initial.data,taxonomist.column = taxonomist.position)
+write.table(cleaned.tax.data,file=paste("","blenniidae_taxonimist.txt",sep=""),col.names=TRUE,row.names=FALSE,sep="\t")
 
+input.data <- read.table("blenniidae_taxonimist.txt", h = T) 
+colnames(input.data)
 
-ci_stot_df <- purrr::imap_dfr(modelos_lista, ~{
-  
-  ci <- boot_stot(.x, desc_intervalo, nboot = 1000)
-  
-  tibble(
-    Modelo = .y,
-    Stot = coef(.x)["Stot"],
-    CI_low = ci[1],
-    CI_high = ci[2]
-  )
-})
+input.data <- input.data %>%
+  mutate(Year = as.numeric(Year))
 
-ci_stot_df
+## Model specifications -----------------------------------
+start.year <- 1758
+end.year <- 2026
+year.interval <- 2
 
-## Figure 2 ---------------------------------------
-simular_full <- function(modelo, df_obs, ano_futuro = 2100, passo = 10) {
-  if (is.null(modelo)) return(NULL)
-  
-  ano_ini <- min(df_obs$Ano_médio, na.rm = TRUE)
-  anos_full <- seq(ano_ini, ano_futuro, by = passo)
-  
-  base <- tibble(
-    Ano_médio = anos_full,
-    Tempo     = anos_full - ano_ini
-  ) |>
-    dplyr::left_join(
-      df_obs |>
-        dplyr::select(Ano_médio, Tt, Acumulado_Total),
-      by = "Ano_médio"
-    )
-  
-  if (inherits(modelo, "gnls")) {
-    cf <- coef(modelo)
-    if (!all(c("Stot","a","b") %in% names(cf))) return(NULL)
+# 2 years (2026), 4 years (2026), 6 years (2028), 8 years (2030), 10 years (2030)
+
+########YEARLY SUMMARY FUNCTION
+yearly.summary.function<-function(dataset,year.column,genus.column,species.column,start.year,end.year,year.interval){
+  yrs<-seq(start.year,end.year,year.interval)	
+  mat<-matrix(data=0,ncol=5,nrow=length(yrs))
+  colnames(mat)<-c("Start_Year","Species","Taxonomists","SpeciesPerTaxonomist","CumulativeSpecies")
+  mat[,1]<-yrs
+  for (q in 1:length(mat[,1])){
+    spec.data<-dataset
+    sam<-spec.data[which(spec.data[,year.column] >= mat[q,1] & spec.data[,year.column] < mat[q,1] + year.interval),]
+    tx.pos<-grep("Taxonomist_",colnames(spec.data))
+    n.tx<-length(grep("Taxonomist_",colnames(spec.data)))
     
-    Stot <- cf[["Stot"]]
-    a    <- cf[["a"]]
-    b    <- cf[["b"]]
-    
-    tt_recent <- tail(stats::na.omit(df_obs$Tt), 3)
-    tt_fut <- if (length(tt_recent) > 0) mean(tt_recent) else mean(df_obs$Tt, na.rm = TRUE)
-    base$Tt[is.na(base$Tt)] <- tt_fut
-    
-    St_prev <- df_obs$Acumulado_Total[df_obs$Ano_médio == ano_ini][1]
-    if (is.na(St_prev)) St_prev <- 0
-    
-    is_joppa <- any(grepl("Tempo", deparse(modelo$modelStruct$form))) ||
-      any(grepl("Tempo", deparse(modelo$call$model)))
-    
-    St_sim <- numeric(nrow(base))
-    
-    for (i in seq_len(nrow(base))) {
-      Tt_i <- base$Tt[i]
-      t_i  <- base$Tempo[i]
-      
-      if (is_joppa) {
-        Delta <- Tt_i * (a + b * t_i) * (Stot - St_prev)
-      } else {
-        denom <- 1 - Tt_i * b * (Stot - St_prev)
-        Delta <- if (denom > 1e-6) (Tt_i * a * (Stot - St_prev)) / denom else 0
-      }
-      
-      Delta   <- max(0, min(Delta, Stot - St_prev, 50))
-      St_prev <- St_prev + Delta
-      St_sim[i] <- St_prev
+    for (j in 1:n.tx){
+      assign(paste("sam.tax",j,sep=""),as.matrix(sam[,tx.pos[j]]))
     }
     
-    out <- tibble(Ano_médio = base$Ano_médio, Acum = St_sim)
+    tax.dat<-ls()[grep("sam.tax",ls())]
+    out.list<-c()
+    for(k in 1:length(tax.dat)){
+      out.list<-c(out.list,get(tax.dat[k]))
+    }
+    sam.alltax<-unique(out.list)
+    sam.un.tax<-sam.alltax[!is.na(sam.alltax)]
     
-  } else {
-    St_pred <- predict(modelo, newdata = base |> dplyr::select(Tempo))
-    out <- tibble(Ano_médio = base$Ano_médio, Acum = as.numeric(St_pred))
+    mat[q,2]<-length(unique(paste(sam[,genus.column],sam[,species.column],sep=" "))) 
+    mat[q,3]<-length(sam.un.tax)
   }
-  
-  out
+  mat[,4]<-mat[,2]/mat[,3]
+  mat[1,5]<-0	
+  for (k in 2:length(mat[,1])){
+    mat[k,5]<-mat[k-1,5]+mat[k-1,2]
+  }
+  return(mat)
 }
 
-dados_obs <- desc_intervalo |>
-  dplyr::select(Ano_médio, Acum_obs = Acumulado_Total)
 
-curvas_full <- list(
-  "Joppa et al. (2011)"  = simular_full(modelo_joppa, desc_intervalo, ano_futuro = 2100),
-  "Lu & He (2017)"       = simular_full(modelo_luhe, desc_intervalo, ano_futuro = 2100),
-  "Logistic"             = simular_full(modelo_logistico, desc_intervalo, ano_futuro = 2100),
-  "Negative exponential" = simular_full(modelo_exp_neg, desc_intervalo, ano_futuro = 2100)
-) |> purrr::discard(is.null)
+year.summary.mat <- yearly.summary.function(dataset = input.data, genus.column = genus.position, species.column = species.position, year.column = year.position, start.year = start.year, end.year = end.year, year.interval = year.interval)
 
-dados_grafico <- purrr::reduce(
-  .x = c(
-    list(dados_obs),
-    lapply(names(curvas_full), function(nm) dplyr::rename(curvas_full[[nm]], !!nm := Acum))
-  ),
-  .f = function(x, y) dplyr::full_join(x, y, by = "Ano_médio")
-)
+sp.dis <- as.data.frame(year.summary.mat)
 
-dados_longos <- dados_grafico |>
-  tidyr::pivot_longer(-Ano_médio, names_to = "Series", values_to = "Accumulated") |>
-  dplyr::filter(!is.na(Accumulated)) |>
-  dplyr::mutate(
-    Series = ifelse(Series == "Acum_obs", "Observed data", Series)
+sp.dis <- sp.dis %>%
+  rename(time = Start_Year, sp.per = Species, tax.per = Taxonomists, sp.cum = CumulativeSpecies
+  ) %>%
+  select(time, sp.per, sp.cum, tax.per) %>% 
+  mutate(sp.cum = lead(sp.cum)) %>%                     
+  filter(!is.na(sp.cum)) %>%
+  filter(sp.per != 0)   
+
+
+write.table(sp.dis, "blenniidae_2_years.txt")
+
+#  Script based on Lu & He 2017,  Appendix S3 codes for fitting the species discovery model
+
+source("run_models_modificado.R")
+source("functions.R")
+
+sp.dis <- read.table("blenniidae_2_years.txt") 
+resu <- run_models(sp.dis)
+
+## Model selection --------------------------------------
+model_names <- c("Lu & He", "Joppa et al.", "Logistic", "Negative exponential")
+names(resu) <- model_names
+sel <- model_selection(resu[1:4])
+description_percentage <- sp.dis[nrow(sp.dis), "sp.cum"] / sel$Average_S_tot
+
+#Model adequacy plots
+predictions_final <- prediction(resu, sel$AIC)
+predictions_final<-predictions_final[,- 5]
+
+# est - 2 anos: 875 espécies (546 a 1203) Lu & He
+# est - 4 anos: 902 espécies (422 a 1384) Lu & He
+# est - 6 anos: sem convergência
+# est - 8 anos: sem convergência
+# est - 10 anos: sem convergência
+
+## Table 1 -------------------------------------------------
+
+model_names <- c("Lu & He (2017)",
+                 "Joppa et al. (2011)",
+                 "Logistic",
+                 "Negative exponential")
+
+names(resu) <- model_names
+
+get_AICc <- function(model, n) {
+  k <- attr(logLik(model), "df")
+  AIC(model) + (2 * k * (k + 1)) / (n - k - 1)
+}
+
+get_Stot <- function(model) {
+  coef(model)["S.tot"]
+}
+
+get_CI <- function(model) {
+  ci <- tryCatch({
+    intervals(model)$coef["S.tot", c("lower", "upper")]
+  }, error = function(e) c(lower = NA, upper = NA))
+  
+  ci
+}
+
+n_eff <- nrow(sp.dis)
+
+table1 <- purrr::imap_dfr(resu, function(model, name) {
+  
+  ci <- get_CI(model)
+  
+  tibble::tibble(
+    Model = name,
+    AICc = get_AICc(model, n_eff),
+    Stotal = get_Stot(model),
+    CI_low = ci["lower"],
+    CI_high = ci["upper"]
+  )
+}) %>%
+  arrange(AICc) %>%
+  mutate(
+    Delta_AICc = AICc - min(AICc),
+    wAICc = exp(-0.5 * Delta_AICc) / sum(exp(-0.5 * Delta_AICc)),
+    AICc = round(AICc, 2),
+    Stotal = round(Stotal, 0),
+    CI_low = round(CI_low, 2),
+    CI_high = round(CI_high, 2),
+    Delta_AICc = round(Delta_AICc, 3),
+    wAICc = round(wAICc, 3),
+    `Stotal (CI 95%: Lower - Upper)` =
+      paste0(Stotal, " (", CI_low, " - ", CI_high, ")")
+  ) %>%
+  select(
+    Model,
+    AICc,
+    `Stotal (CI 95%: Lower - Upper)`,
+    Delta_AICc,
+    wAICc
   )
 
-cores <- c(
-  "Observed data"        = "black",
-  "Joppa et al. (2011)"  = "#E41A1C",
-  "Lu & He (2017)"       = "#377EB8",
-  "Logistic"             = "#4DAF4A",
-  "Negative exponential" = "#984EA3"
+table1
+
+## Figure 2 -------------------------------
+pred_df <- as.data.frame(predictions_final)
+
+colnames(pred_df) <- c(
+  "Lu & He",
+  "Joppa et al.",
+  "Logistic",
+  "Negative exponential"
 )
 
-linhas <- c(
-  "Observed data"        = "solid",
-  "Joppa et al. (2011)"  = "dashed",
-  "Lu & He (2017)"       = "dotted",
-  "Logistic"             = "dotdash",
-  "Negative exponential" = "longdash"
+plot_df <- bind_cols(
+  sp.dis %>% select(time, sp.cum),
+  pred_df %>% mutate(across(everything(), cumsum))
+) %>%
+  pivot_longer(
+    cols = -time,
+    names_to = "Series",
+    values_to = "Accumulated"
+  ) %>%
+  mutate(
+    Series = recode(Series, sp.cum = "Observed values"),
+    Series = factor(
+      Series,
+      levels = c(
+        "Observed values",
+        "Lu & He",
+        "Joppa et al.",
+        "Logistic",
+        "Negative exponential"
+      )
+    )
+  )
+
+cols <- c(
+  "Observed values" = "darkgrey",
+  "Lu & He" = brewer.pal(8, "Set2")[1],
+  "Joppa et al." = brewer.pal(8, "Set2")[2],
+  "Logistic" = brewer.pal(8, "Set2")[3],
+  "Negative exponential" = "purple"
 )
 
-cores_ok  <- cores [intersect(names(cores),  unique(dados_longos$Series))]
-linhas_ok <- linhas[intersect(names(linhas), unique(dados_longos$Series))]
-
-dados_longos$Series <- factor(
-  dados_longos$Series,
-  levels = rev(unique(dados_longos$Series))
-)
-
-fig2 = ggplot() +
-  geom_line(
-    data = dados_longos |> dplyr::filter(Series == "Observed data"),
-    aes(Ano_médio, Accumulated, color = Series, linetype = Series),
-    linewidth = 1.5
-  ) +
-  geom_point(
-    data = dados_longos |> dplyr::filter(Series == "Observed data"),
-    aes(Ano_médio, Accumulated),
-    size = 3, color = "black"
-  ) +
-  geom_line(
-    data = dados_longos |> dplyr::filter(Series != "Observed data"),
-    aes(Ano_médio, Accumulated, color = Series, linetype = Series),
-    linewidth = 1.5
-  ) +
-  geom_vline(xintercept = 2024, linetype = "dashed", color = "darkgray", linewidth = 0.7) +
+fig2 <- ggplot(
+  plot_df,
+  aes(time, Accumulated,
+      color = Series,
+      linetype = Series)
+) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = cols) +
+  scale_linetype_manual(values = rep("solid", length(cols))) +
   scale_x_continuous(
-    breaks = seq(1750, 2100, 25),
-    limits = c(min(dados_longos$Ano_médio), 2100)
+    limits = c(1758, 2026),
+    breaks = seq(1760, 2020, 20)
   ) +
-  scale_y_continuous(
-    limits = c(0, max(dados_longos$Accumulated, na.rm = TRUE) * 1.1)
-  ) +
-  scale_color_manual(values = cores_ok) +
-  scale_linetype_manual(values = linhas_ok) +
+  scale_y_continuous(limits = c(0, 600)) +
   theme_classic(base_size = 16) +
   theme(
     legend.title = element_blank(),
-    legend.position = "bottom",
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    panel.grid.minor = element_blank()
-  )+
-  labs(y = "Cumulative number of species", x = "Year")
+    legend.position = c(0.03, 0.97),
+    legend.justification = c(0, 1),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    x = "Description dates",
+    y = "Cumulative number of\nspecies descriptions"
+  )
 
 fig2
 
-ggsave("Figure_2.jpg",fig2,width = 10,height = 7)
+ggsave(
+  "Figure_2.png",
+  fig2,
+  width = 17,
+  height = 12,
+  units = "cm",
+  dpi = 300
+)
+
+## Table S1 - 4-year interval -----------------------------------------
+year.interval <- 4
+end_i <- 2026
+
+year.summary.mat <- yearly.summary.function(
+    dataset = input.data,
+    genus.column = genus.position,
+    species.column = species.position,
+    year.column = year.position,
+    start.year = start.year,
+    end.year = end_i,
+    year.interval = year.interval
+)
+
+sp.dis.4 <- as.data.frame(year.summary.mat) %>%
+  rename(
+    time = Start_Year,
+    sp.per = Species,
+    tax.per = Taxonomists,
+    sp.cum = CumulativeSpecies
+  ) %>%
+  select(time, sp.per, sp.cum, tax.per) %>%
+  mutate(sp.cum = lead(sp.cum)) %>%
+  filter(!is.na(sp.cum)) %>%
+  filter(sp.per != 0)
+
+
+resu.4 <- run_models(sp.dis.4)
+
+model_names <- c(
+  "Lu & He (2017)",
+  "Joppa et al. (2011)",
+  "Logistic",
+  "Negative exponential"
+)
+
+resu.4 <- resu.4[1:4]
+names(resu.4) <- model_names
+
+## Helper functions
+get_AICc <- function(model, n) {
+  k <- attr(logLik(model), "df")
+  AIC(model) + (2 * k * (k + 1)) / (n - k - 1)
+}
+
+get_Stot <- function(model) {
+  coef(model)["S.tot"]
+}
+
+get_CI <- function(model) {
+  tryCatch({
+    intervals(model)$coef["S.tot", c("lower", "upper")]
+  }, error = function(e) c(lower = NA, upper = NA))
+}
+
+n_eff.4 <- nrow(sp.dis.4)
+
+## Build Table S1
+table_s1 <- purrr::imap_dfr(resu.4, function(model, name) {
+  
+  ci <- get_CI(model)
+  
+  tibble(
+    Model = name,
+    AICc = get_AICc(model, n_eff.4),
+    Stotal = as.numeric(get_Stot(model)),
+    CI_low = as.numeric(ci["lower"]),
+    CI_high = as.numeric(ci["upper"])
+  )
+}) %>%
+  arrange(AICc) %>%
+  mutate(
+    Delta_AICc = AICc - min(AICc),
+    wAICc = exp(-0.5 * Delta_AICc) /
+      sum(exp(-0.5 * Delta_AICc)),
+    
+    AICc = round(AICc, 2),
+    Stotal = round(Stotal, 0),
+    CI_low = round(CI_low, 2),
+    CI_high = round(CI_high, 2),
+    Delta_AICc = round(Delta_AICc, 3),
+    wAICc = round(wAICc, 3),
+    
+    `Stotal (CI 95%: Lower - Upper)` =
+      paste0(Stotal, " (", CI_low, " - ", CI_high, ")")
+  ) %>%
+  select(
+    Model,
+    AICc,
+    `Stotal (CI 95%: Lower - Upper)`,
+    Delta_AICc,
+    wAICc
+  )
+
+table_s1
 
 # Year ~ Body size --------------------------------
 data = read_excel("valid_species.xlsx")
